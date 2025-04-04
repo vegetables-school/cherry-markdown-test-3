@@ -5,25 +5,119 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          token: ${{ secrets.BOT_TOKEN }}
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
+          node-version: '20.x'
+          cache: 'yarn'
+
       - name: Install dependencies
         run: yarn
-      - name: Run changeset version
+
+      - name: Changeset version
+        id: changeset-version
         run: yarn changeset version
-      - name: Create new branch and push
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git checkout -b changeset-release/main
-          git push origin changeset-release/main
+
+      - name: Commit and push changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = 'changeset-release/main';
+
+            try {
+              // 1. 获取目标分支的 ref
+              const refData = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${branch}`,
+              });
+              const sha = refData.data.object.sha;
+
+              // 2. 获取所有更改的文件
+              const statusOutput = await exec.exec('git', ['status', '--porcelain']);
+              const changedFiles = statusOutput.stdout.split('\n').filter(line => line.trim() !== '').map(line => line.substring(3).trim());
+
+              // 3. 创建一个包含所有更改的文件的 tree
+              const treeItems = [];
+              for (const filePath of changedFiles) {
+                const fileContent = fs.readFileSync(filePath, 'utf8'); // 读取文件内容
+                treeItems.push({
+                  path: filePath, // 文件路径
+                  mode: '100644', // 文件模式 (blob)
+                  type: 'blob', // 文件类型 (blob)
+                  content: fileContent, // 文件内容
+                });
+              }
+
+              const treeData = await github.rest.git.createTree({
+                owner,
+                repo,
+                base_tree: sha, // 基于当前 commit 创建 tree
+                tree: treeItems, // 包含所有更改的文件的 tree
+              });
+
+              // 4. 创建 commit
+              const commitData = await github.rest.git.createCommit({
+                owner,
+                repo,
+                message: 'chore: update versions', // 提交信息
+                tree: treeData.data.sha, // tree 的 SHA
+                parents: [sha], // 父 commit 的 SHA
+              });
+
+              // 5. 更新 ref，指向新的 commit
+              await github.rest.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${branch}`, // 要更新的 ref
+                sha: commitData.data.sha, // 新 commit 的 SHA
+                force: false, // 是否强制更新
+              });
+
+              console.log(`Successfully pushed changes to ${branch}`);
+            } catch (error) {
+              console.error('Failed to commit and push changes:', error);
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GITHUB_TOKEN 进行身份验证
+
+      - name: Create PR to dev
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }} # 使用 BOT_TOKEN 创建 PR
+        with:
+          script: |
+            const prTitle = `chore: release`; // PR 标题
+            const changeLog = process.env.CHANGESET_OUTPUT || 'Changeset 自动版本更新的拉取请求。'; // PR 内容
+
+            try {
+              const { data: pullRequest } = await github.rest.pulls.create({
+                owner: context.repo.owner, // 仓库所有者
+                repo: context.repo.repo, // 仓库名称
+                head: 'dev', // 要合并的分支
+                base: 'main', // 目标分支
+                title: prTitle, // PR 标题
+                body: changeLog, // PR 内容
+              });
+
+              console.log(`Pull request created: ${pullRequest.html_url}`);
+            } catch (error) {
+              console.error('Failed to create pull request:', error);
+            }
