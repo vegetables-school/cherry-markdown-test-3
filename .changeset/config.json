@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.0.5/schema.json",
-  "changelog": ["@cherry-markdown/changesets-changelog-github", {"repo": "RSS1102/cherry-markdown-test-3"}],
+  "changelog": ["@cherry-markdown/changesets-changelog-github", {"repo": "vegetables-school/cherry-markdown-test-3"}],
   "commit": false,
   "fixed": [],
   "linked": [],
